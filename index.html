@@ -525,14 +525,34 @@ td{padding:12px 16px;font-size:.82rem;font-family:var(--mono);vertical-align:mid
   <div class="page" id="page-api">
     <div class="topbar"><div><div class="pg-title">Settings & API</div><div class="pg-sub">Live feeds · Data management · Auto-refresh</div></div></div>
 
-    <!-- DATA MANAGEMENT -->
     <div class="slabel">Data Management</div>
     <div class="api-box" style="margin-bottom:26px">
-      <div class="api-title" style="font-size:1.05rem;margin-bottom:8px">💾 Backup & Restore (JSON)</div>
-      <div class="api-desc">Export your entire TradeDesk workspace (trades, lot sizes, API settings) to a JSON file. Use this to safely backup your data or move it to another browser/device.</div>
+      <div class="api-title" style="font-size:1.05rem;margin-bottom:8px">💾 Local Backup & Restore (JSON)</div>
+      <div class="api-desc" style="margin-bottom:12px">Export your entire TradeDesk workspace (trades, lot sizes, API settings) to a JSON file. Use this to safely backup your data or move it to another browser/device.</div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-gold" onclick="exportDataJson()">⬇ Export Full Backup</button>
         <label class="btn btn-ghost" style="cursor:pointer">⬆ Import Backup<input type="file" accept=".json" style="display:none" onchange="importDataJson(event)"></label>
+      </div>
+
+      <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:20px">
+        <div class="api-title" style="font-size:1.05rem;margin-bottom:8px">☁️ Cloud Sync (via JSONBin.io)</div>
+        <div class="api-desc" style="margin-bottom:12px">Sync your trades automatically to the cloud so you can access them on your phone. Create a free account at <a href="https://jsonbin.io" target="_blank" style="color:var(--teal)">jsonbin.io</a>, create a bin, and paste your Master Key and Bin ID below.</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:12px">
+          <div class="fgroup">
+            <label>Master API Key</label>
+            <input type="password" id="jbKey" placeholder="e.g. $2a$10$...">
+          </div>
+          <div class="fgroup">
+            <label>Bin ID</label>
+            <input type="text" id="jbBin" placeholder="e.g. 64a...">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-gold btn-sm" onclick="saveJbConfig()">💾 Save Config</button>
+          <button class="btn btn-teal btn-sm" onclick="fetchJbCloud()">⬇ Pull from Cloud</button>
+          <button class="btn btn-red btn-sm" onclick="pushJbCloud()">⬆ Push to Cloud</button>
+          <div id="jbStatus" style="font-size:.7rem;margin-left:10px;font-family:var(--mono)"></div>
+        </div>
       </div>
     </div>
 
@@ -841,6 +861,13 @@ function loadData() {
     var t = localStorage.getItem('td_trades3'); if (t) trades = JSON.parse(t);
     var l = localStorage.getItem('td_lots3');   if (l) lots = JSON.parse(l); else lots = Object.assign({}, DEFAULT_LOTS);
     var a = localStorage.getItem('td_api3');    if (a) { apiCfg = JSON.parse(a); if (apiCfg.mode) restoreApiStatus(); }
+    var j = localStorage.getItem('td_jb');      if (j) {
+      var jbCfg = JSON.parse(j);
+      if (document.getElementById('jbKey')) {
+        document.getElementById('jbKey').value = jbCfg.key || '';
+        document.getElementById('jbBin').value = jbCfg.bin || '';
+      }
+    }
   } catch(e) { lots = Object.assign({}, DEFAULT_LOTS); }
 }
 
@@ -2171,6 +2198,71 @@ initTheme();
 
 // Kick off dash charts after load
 setTimeout(renderDashCharts, 400);
+// ════════════════════════════════════════════
+// CLOUD SYNC (JSONBin.io)
+// ════════════════════════════════════════════
+function saveJbConfig() {
+  var k = document.getElementById('jbKey').value.trim();
+  var b = document.getElementById('jbBin').value.trim();
+  localStorage.setItem('td_jb', JSON.stringify({ key: k, bin: b }));
+  var s = document.getElementById('jbStatus');
+  s.style.color = 'var(--teal)'; s.textContent = 'Config saved locally!';
+  toast('JSONBin config saved', 'ok');
+}
+
+function getJbOpts(method, data) {
+  var j = localStorage.getItem('td_jb');
+  if (!j) return null;
+  var cfg = JSON.parse(j);
+  if (!cfg.key || !cfg.bin) return null;
+  var opts = {
+    method: method,
+    headers: { 'Content-Type': 'application/json', 'X-Master-Key': cfg.key }
+  };
+  if (data) opts.body = JSON.stringify(data);
+  return { url: 'https://api.jsonbin.io/v3/b/' + cfg.bin, opts: opts };
+}
+
+async function fetchJbCloud() {
+  var s = document.getElementById('jbStatus');
+  var req = getJbOpts('GET');
+  if (!req) { s.style.color='var(--red)'; s.textContent='Missing API Key or Bin ID'; return; }
+  s.style.color = 'var(--gold)'; s.textContent = 'Pulling from cloud...';
+  try {
+    var res = await fetch(req.url, req.opts);
+    if (!res.ok) throw new Error('API Error');
+    var json = await res.json();
+    if (json.record && json.record.trades) {
+      trades = json.record.trades;
+      saveData();
+      renderAll();
+      s.style.color = 'var(--teal)'; s.textContent = 'Successfully synced from cloud!';
+      toast('Pulled ' + trades.length + ' trades from cloud', 'ok');
+    } else {
+      throw new Error('Invalid data format');
+    }
+  } catch (e) {
+    s.style.color = 'var(--red)'; s.textContent = 'Failed to pull: Check credentials';
+    toast('Cloud Pull Failed', 'err');
+  }
+}
+
+async function pushJbCloud() {
+  var s = document.getElementById('jbStatus');
+  var req = getJbOpts('PUT', { trades: trades });
+  if (!req) { s.style.color='var(--red)'; s.textContent='Missing API Key or Bin ID'; return; }
+  s.style.color = 'var(--gold)'; s.textContent = 'Pushing to cloud...';
+  try {
+    var res = await fetch(req.url, req.opts);
+    if (!res.ok) throw new Error('API Error');
+    s.style.color = 'var(--teal)'; s.textContent = 'Successfully pushed to cloud!';
+    toast('Pushed ' + trades.length + ' trades to cloud', 'ok');
+  } catch (e) {
+    s.style.color = 'var(--red)'; s.textContent = 'Failed to push: Check credentials';
+    toast('Cloud Push Failed', 'err');
+  }
+}
+
 </script>
 </body>
 </html>
